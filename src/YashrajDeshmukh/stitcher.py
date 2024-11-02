@@ -43,6 +43,22 @@ def resize_image(image):
     
     return resized_image
 
+def sortted(images):
+
+    images = sorted(images)
+    num_images = len(images)
+    
+    if num_images == 5:
+        order = [3, 4, 2, 5, 1]
+    elif num_images == 6:
+        order = [3, 4, 5, 2, 6, 1]
+    else:
+        raise images
+    
+    reordered_images = [images[i-1] for i in order]
+    
+    return reordered_images
+
 def crop_empty_borders(image):
     """
     Crop the empty borders (rows and columns containing only zeros) from the image.
@@ -356,7 +372,7 @@ class PanaromaStitcher():
         """
         try:
             # Load all images from the provided path
-            all_images = sorted(glob.glob(path + os.sep + '*'))
+            all_images = sortted(glob.glob(path + os.sep + '*'))
             logging.info('Found %d images for stitching', len(all_images))
 
             if len(all_images) < 2:
