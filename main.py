@@ -11,12 +11,13 @@ import cv2
 path = 'Images{}*'.format(os.sep)  # Use os.sep, Windows, linux have different path delimiters
 ###
 
-all_submissions = glob.glob('./src/*')
+all_submissions = glob.glob('./src/YashrajDeshmukh')
 os.makedirs('./results/', exist_ok=True)
 for idx,algo in enumerate(all_submissions):
-    print('****************\tRunning Awesome Stitcher developed by: {}  | {} of {}\t********************'.format(algo.split(os.sep)[-1],idx,len(all_submissions)))
+    print('****************\tRunning Awesome Stitcher developed by: {}  | {} of {}\t********************'.format(algo.split(os.sep)[-1],idx+1,len(all_submissions)))
     try:
-        module_name = '{}_{}'.format(algo.split(os.sep)[-1],'stitcher')
+        # module_name = '{}_{}'.format(algo.split(os.sep)[-1],'stitcher')
+        module_name = '{}_{}'.format(os.path.basename(algo), 'stitcher')
         filepath = '{}{}stitcher.py'.format( algo,os.sep,'stitcher.py')
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         module = importlib.util.module_from_spec(spec)
@@ -25,7 +26,7 @@ for idx,algo in enumerate(all_submissions):
         inst = PanaromaStitcher()
 
         ###
-        for impaths in glob.glob(path):
+        for impaths in glob.glob(path)[:1]:
             print('\t\t Processing... {}'.format(impaths))
             stitched_image, homography_matrix_list = inst.make_panaroma_for_images_in(path=impaths)
 
