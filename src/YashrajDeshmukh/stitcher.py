@@ -43,6 +43,29 @@ def resize_image(image):
     
     return resized_image
 
+def crop_empty_borders(image):
+    """
+    Crop the empty borders (rows and columns containing only zeros) from the image.
+    
+    Args:
+    - image (numpy.ndarray): The input image.
+    
+    Returns:
+    - numpy.ndarray: The cropped image.
+    """
+    # Find the rows and columns that contain non-zero values
+    non_zero_rows = np.any(image != 0, axis=(1, 2))
+    non_zero_cols = np.any(image != 0, axis=(0, 2))
+    
+    # Get the indices of the first and last non-zero rows and columns
+    row_start, row_end = np.where(non_zero_rows)[0][[0, -1]]
+    col_start, col_end = np.where(non_zero_cols)[0][[0, -1]]
+    
+    # Crop the image to the bounding box containing non-zero values
+    cropped_image = image[row_start:row_end + 1, col_start:col_end + 1]
+    
+    return cropped_image
+
 class PanaromaStitcher():
     def __init__(self):
         pass
@@ -291,31 +314,34 @@ class PanaromaStitcher():
         Returns:
         - np.array: The stitched image.
         """
-        x_offset, y_offset = offset
+        try:
+            x_offset, y_offset = offset
         
-        # Resize the panorama canvas to accommodate the new image if necessary
-        panorama = warped_image.copy()
-        panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
+            # Create a canvas of the same size as the warped image
+            canvas = np.zeros_like(warped_image)
+            # Place the base image on the canvas with the appropriate offset
+            canvas[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
 
-        # Masks for non-black (non-zero) regions in both images
-        base_mask = (base_image != 0)
-        panorama_mask = (panorama != 0)
+            # Masks for non-black (non-zero) regions in both images
+            base_mask = (canvas != 0)
+            warped_mask = (warped_image != 0)
 
-        # Blending overlapping regions by taking the average
-        combined_image = np.where(
-            panorama_mask & base_mask,  # Where both images overlap
-            (panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] + base_image) // 2,
-            np.where(
-                panorama_mask,  # Where only the panorama has non-zero pixels
-                panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]],
-                base_image  # Where only the base_image has non-zero pixels
+            # Blending overlapping regions by taking the average
+            combined_image = np.where(
+                base_mask & warped_mask,  # Where both images overlap
+                (canvas + warped_image) // 2,
+                np.where(
+                    warped_mask,  # Where only the warped image has non-zero pixels
+                    warped_image,
+                    canvas  # Where only the base image has non-zero pixels
+                )
             )
-        )
 
-        # Place the combined image in the panorama canvas
-        panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = combined_image
+            return crop_empty_borders(combined_image)  # Return the stitched result as the new base image
         
-        return panorama  # Return the stitched result as the new base image
+        except Exception as e:
+            logging.error("Error in stitch_images: %s", e)
+            raise
     
     def make_panaroma_for_images_in(self, path):
         """
