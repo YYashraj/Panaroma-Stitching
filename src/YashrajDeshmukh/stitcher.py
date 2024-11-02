@@ -188,7 +188,7 @@ class PanaromaStitcher():
 
             # Log the number of inliers and the best homography matrix
             logging.info("Number of inliers: %d", len(max_inliers))
-            logging.info("Best homography matrix:\n%s", best_H)
+            # logging.info("Best homography matrix:\n%s", best_H)
 
             return best_H
 
@@ -384,8 +384,6 @@ class PanaromaStitcher():
                 if base_image is None:
                     base_image = next_image
                     continue
-
-                # print(f"here0_{i}")
                 
                 # Step 1: Detect and match features between consecutive images
                 good_matches = self.detect_and_match_features(next_image, base_image)
@@ -394,15 +392,11 @@ class PanaromaStitcher():
                 H = self.get_homography_via_RANSAC(good_matches)
                 homography_matrix_list.append(H)
 
-                # print(f"here1_{i}")
-
                 # Step 3: Warp the right image and stitch with the base image
                 warped_image, offset = self.warp_image(next_image, H, base_image.shape)
 
                 # Superimpose the warped image onto the canvas
                 base_image = self.stitch_images(base_image, warped_image, offset)
-
-                # print(f"here2_{i}")
 
             # Return final stitched image and all homography matrices
             stitched_image = base_image
