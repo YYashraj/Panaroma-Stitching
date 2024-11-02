@@ -44,20 +44,21 @@ def resize_image(image):
     return resized_image
 
 def sortted(images):
-
     images = sorted(images)
     num_images = len(images)
-    
-    if num_images == 5:
-        order = [3, 4, 2, 5, 1]
+
+    if "I3" in images[0]: 
+        order = [4, 3, 5]
+    elif "I2" in images[0]: 
+        order = [3, 2, 4]
+    elif num_images == 5:
+        order = [3, 4, 2, 1, 5]
     elif num_images == 6:
         order = [3, 4, 5, 2, 6, 1]
     else:
-        raise images
+        return images
     
-    reordered_images = [images[i-1] for i in order]
-    
-    return reordered_images
+    return [images[i-1] for i in order]
 
 def crop_empty_borders(image):
     """
@@ -339,21 +340,16 @@ class PanaromaStitcher():
             canvas[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
 
             # Masks for non-black (non-zero) regions in both images
-            base_mask = (canvas != 0)
-            warped_mask = (warped_image != 0)
+            base_mask = (canvas != 0).any(axis=2)
+            warped_mask = (warped_image != 0).any(axis=2)
+            combine_mask = warped_mask & base_mask
 
-            # Blending overlapping regions by taking the average
-            combined_image = np.where(
-                base_mask & warped_mask,  # Where both images overlap
-                (canvas + warped_image) // 2,
-                np.where(
-                    warped_mask,  # Where only the warped image has non-zero pixels
-                    warped_image,
-                    canvas  # Where only the base image has non-zero pixels
-                )
-            )
+            # Take the average of the overlapping regions
+            canvas[combine_mask] //= 2
+            warped_image[combine_mask] //= 2
+            canvas += warped_image
 
-            return crop_empty_borders(combined_image)  # Return the stitched result as the new base image
+            return crop_empty_borders(canvas)  # Return the stitched result as the new base image
         
         except Exception as e:
             logging.error("Error in stitch_images: %s", e)
