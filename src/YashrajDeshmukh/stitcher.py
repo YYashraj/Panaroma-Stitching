@@ -68,6 +68,9 @@ class PanaromaStitcher():
             for match in matches:
                 correspondences.append((keypoints_left[match.queryIdx].pt, keypoints_right[match.trainIdx].pt))
 
+            # Log the number of matches found
+            logging.info("Found %d matches between the images", len(correspondences))
+            
             return np.array(correspondences)
 
         except Exception as e:
@@ -182,121 +185,127 @@ class PanaromaStitcher():
 
         return np.clip(interpolated_value, 0, 255).astype(np.uint8)
     
-    def _compute_canvas_and_offset(self, image_left, image_right, H):
+    def _compute_bounding_box(self, left_image, H):
         """
-        Computes a canvas size and offset for placing the transformed left image and the right image.
+        Computes the bounding box of the transformed left_image in the panorama space.
 
         Parameters:
-            image_left (ndarray): The reference (left) image.
-            image_right (ndarray): The right image.
-            H (ndarray): The homography matrix mapping left image to the right image's coordinates.
+            left_image (ndarray): The left image to be warped.
+            H (ndarray): The homography matrix for transforming the left image.
 
         Returns:
-            canvas_width (int): Width of the canvas to fit both images.
-            canvas_height (int): Height of the canvas to fit both images.
-            x_offset (int): X offset to translate images to non-negative coordinates.
-            y_offset (int): Y offset to translate images to non-negative coordinates.
+            x_min, x_max, y_min, y_max (tuple): Bounding box coordinates for the transformed left image.
         """
-        h_left, w_left = image_left.shape[:2]
-        h_right, w_right = image_right.shape[:2]
+        height, width = left_image.shape[:2]
+        corners = np.array([[0, 0, 1], [width, 0, 1], [width, height, 1], [0, height, 1]]).T
+        transformed_corners = H @ corners
+        transformed_corners /= transformed_corners[2]  # Normalize by the homogeneous coordinate
 
-        # Corners of the left image (to be transformed)
-        left_corners = np.array([
-            [0, 0, 1],                      # Top-left
-            [w_left - 1, 0, 1],             # Top-right
-            [w_left - 1, h_left - 1, 1],    # Bottom-right
-            [0, h_left - 1, 1]              # Bottom-left
-        ])
+        # Calculate min and max x, y coordinates for the bounding box
+        x_min, x_max = int(np.floor(transformed_corners[0].min())), int(np.ceil(transformed_corners[0].max()))
+        y_min, y_max = int(np.floor(transformed_corners[1].min())), int(np.ceil(transformed_corners[1].max()))
 
-        # Apply homography to left image corners
-        transformed_left_corners = []
-        for corner in left_corners:
-            transformed_corner = np.dot(H, corner)
-            transformed_corner /= transformed_corner[2]             # Normalize by third coordinate
-            transformed_left_corners.append(transformed_corner[:2])
-        transformed_left_corners = np.array(transformed_left_corners)
+        return x_min, x_max, y_min, y_max
 
-        # Calculate bounding box for transformed left image corners
-        x_min, y_min = np.min(transformed_left_corners, axis=0)
-        x_max, y_max = np.max(transformed_left_corners, axis=0)
-
-        # Use ceiling for offsets to handle fractional minimum values
-        x_offset = int(np.ceil(-x_min) if x_min < 0 else 0)
-        y_offset = int(np.ceil(-y_min) if y_min < 0 else 0)
-
-        # Determine canvas width and height, including the dimensions of the right image
-        canvas_width = int(np.ceil(max(x_max + x_offset, w_right + x_offset)))
-        canvas_height = int(np.ceil(max(y_max + y_offset, h_right + y_offset)))
-
-        return canvas_width, canvas_height, x_offset, y_offset
-
-    def warp_image(self, image, H, output_shape, x_offset, y_offset):
+    def warp_image(self, left_image, H, right_image_shape):
         """
-        Warps the input image using inverse mapping and computes the output shape based on the bounding box.
+        Warps the left_image onto a larger canvas using homography H and places it within the appropriate bounding box.
 
         Parameters:
-            image (ndarray): The input image to be warped.
-            H (ndarray): The homography matrix.
-            output_shape (tuple): The dimensions (height, width) of the output canvas.
-            x_offset (int): X offset to translate image coordinates.
-            y_offset (int): Y offset to translate image coordinates.
+            left_image (ndarray): The left image to be transformed.
+            H (ndarray): The homography matrix for transforming left_image.
+            right_image_shape (tuple): The shape of the right image (height, width, channels).
 
         Returns:
-            warped_image (ndarray): The warped image on the output canvas with transformed coordinates.
+            warped_canvas (ndarray): The transformed and warped image on the canvas.
+            offset (tuple): The (x_offset, y_offset) for placing both images on the canvas.
         """
-        h_out, w_out = output_shape
-        warped_image = np.zeros((h_out, w_out, 3), dtype=np.uint8)
+        # Compute bounding box of the transformed left image
+        x_min, x_max, y_min, y_max = self._compute_bounding_box(left_image, H)
+
+        # Calculate canvas dimensions and offset
+        canvas_width = max(x_max, right_image_shape[1]) - min(x_min, 0)
+        canvas_height = max(y_max, right_image_shape[0]) - min(y_min, 0)
+        x_offset = -min(x_min, 0)
+        y_offset = -min(y_min, 0)
+
+        # Initialize the canvas
+        warped_canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+
+        # Calculate inverse homography for mapping canvas pixels back to left_image coordinates
         H_inv = np.linalg.inv(H)
 
-        for y_out in range(h_out):
-            for x_out in range(w_out):
-                src_point = np.dot(H_inv, np.array([x_out - x_offset, y_out - y_offset, 1]))
-                src_point /= src_point[2]
+        # Generate grid of pixel coordinates within the bounding box
+        x_coords, y_coords = np.meshgrid(np.arange(x_min, x_max + 1), np.arange(y_min, y_max + 1))
+        coords_homogeneous = np.stack([x_coords.flatten(), y_coords.flatten(), np.ones_like(x_coords.flatten())])
 
-                x_src, y_src = src_point[:2]
-                if 0 <= x_src < image.shape[1] and 0 <= y_src < image.shape[0]:
-                    warped_image[y_out, x_out] = self._bilinear_interpolation(image, x_src, y_src)
+        # Map canvas coordinates back to source (left_image) coordinates using inverse homography
+        transformed_coords = H_inv @ coords_homogeneous
+        transformed_coords /= transformed_coords[2]  # Normalize to get (x, y) coordinates in left_image
 
-        return warped_image
+        x_src = transformed_coords[0].reshape(y_coords.shape)
+        y_src = transformed_coords[1].reshape(y_coords.shape)
+
+        # Apply bilinear interpolation on valid transformed coordinates and fill the canvas
+        for i in range(y_coords.shape[0]):
+            for j in range(x_coords.shape[1]):
+                x, y = x_src[i, j], y_src[i, j]
+                if 0 <= x < left_image.shape[1] and 0 <= y < left_image.shape[0]:
+                    warped_canvas[y_coords[i, j] + y_offset, x_coords[i, j] + x_offset] = self._bilinear_interpolation(left_image, x, y)
+
+        return warped_canvas, (x_offset, y_offset)
 
     def make_panaroma_for_images_in(self, path):
         """
-        Load all images from the provided path and create a panorama.
+        Load all images from the provided path and create a panorama by stitching them.
+
+        Parameters:
+            path (str): Directory containing images to stitch.
+
+        Returns:
+            stitched_image (ndarray): Final stitched panorama image.
+            homography_matrix_list (list): List of homography matrices used in stitching.
         """
         try:
+            # Load all images from the provided path
             all_images = sorted(glob.glob(path + os.sep + '*'))
             logging.info('Found %d images for stitching', len(all_images))
 
             if len(all_images) < 2:
                 raise ValueError("Need at least two images to create a panorama.")
 
-            base_image = resize_image(cv2.imread(all_images[0]))
+            # Read the first image as the base image for the panorama
+            base_image = cv2.imread(all_images[0])
             homography_matrix_list = []
 
             for i in range(1, len(all_images)):
-                next_image = resize_image(cv2.imread(all_images[i]))
+                next_image = cv2.imread(all_images[i])
 
-                # Detect and match features
+                # Step 1: Detect and match features between consecutive images
                 good_matches = self.detect_and_match_features(base_image, next_image)
+
+                # Step 2: Compute the homography matrix between consecutive images
                 H = self.get_homography_via_RANSAC(good_matches)
                 homography_matrix_list.append(H)
 
-                # Compute canvas and offset
-                canvas_width, canvas_height, x_offset, y_offset = self._compute_canvas_and_offset(base_image, next_image, H)
-                output_shape = (canvas_height, canvas_width)
+                print(f"here1_{i}")
 
-                # Warp base_image onto the larger canvas
-                warped_base_image = self.warp_image(base_image, H, output_shape, x_offset, y_offset)
+                # Step 3: Warp the left image and stitch with the next image
+                warped_image, offset = self.warp_image(base_image, H, next_image.shape)
 
-                # Place the right image onto the canvas
-                panorama = warped_base_image
+                # Superimpose the warped image onto the canvas
+                x_offset, y_offset = offset
+                panorama = warped_image
                 panorama[y_offset:y_offset + next_image.shape[0], x_offset:x_offset + next_image.shape[1]] = next_image
 
-                # Update base image for the next iteration
                 base_image = panorama
 
-            return base_image, homography_matrix_list
+                print(f"here2_{i}")
+
+            # Return final stitched image and all homography matrices
+            stitched_image = base_image
+            return stitched_image, homography_matrix_list
 
         except Exception as e:
-            logging.error("Error in make_panaroma_for_images_in: %s", e)
+            logging.error("Error in make_panorama_for_images_in: %s", e)
             raise
