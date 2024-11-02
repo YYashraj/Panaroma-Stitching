@@ -279,6 +279,44 @@ class PanaromaStitcher():
 
         return warped_canvas, (x_offset, y_offset)
 
+    def stitch_images(self, base_image, warped_image, offset):
+        """
+        Stitches the warped_image onto the base_image with a given offset, blending overlapping areas.
+
+        Parameters:
+        - base_image: np.array, the reference image onto which the warped image will be stitched.
+        - warped_image: np.array, the transformed image to stitch onto the base_image.
+        - offset: tuple of (x_offset, y_offset), specifying the offset of the warped image on the panorama canvas.
+
+        Returns:
+        - np.array: The stitched image.
+        """
+        x_offset, y_offset = offset
+        
+        # Resize the panorama canvas to accommodate the new image if necessary
+        panorama = warped_image.copy()
+        panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
+
+        # Masks for non-black (non-zero) regions in both images
+        base_mask = (base_image != 0)
+        panorama_mask = (panorama != 0)
+
+        # Blending overlapping regions by taking the average
+        combined_image = np.where(
+            panorama_mask & base_mask,  # Where both images overlap
+            (panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] + base_image) // 2,
+            np.where(
+                panorama_mask,  # Where only the panorama has non-zero pixels
+                panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]],
+                base_image  # Where only the base_image has non-zero pixels
+            )
+        )
+
+        # Place the combined image in the panorama canvas
+        panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = combined_image
+        
+        return panorama  # Return the stitched result as the new base image
+    
     def make_panaroma_for_images_in(self, path):
         """
         Load all images from the provided path and create a panorama by stitching them.
@@ -324,11 +362,7 @@ class PanaromaStitcher():
                 warped_image, offset = self.warp_image(next_image, H, base_image.shape)
 
                 # Superimpose the warped image onto the canvas
-                x_offset, y_offset = offset
-                panorama = warped_image
-                panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
-
-                base_image = panorama
+                base_image = self.stitch_images(base_image, warped_image, offset)
 
                 # print(f"here2_{i}")
 
