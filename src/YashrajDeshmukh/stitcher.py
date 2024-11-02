@@ -65,11 +65,11 @@ class PanaromaStitcher():
 
             # Get the keypoints corresponding to the matches
             correspondences = []
-            for match in matches:
+            for match in matches[:nfeatures]:
                 correspondences.append((keypoints_left[match.queryIdx].pt, keypoints_right[match.trainIdx].pt))
 
             # Log the number of matches found
-            logging.info("Found %d matches between the images", len(correspondences))
+            logging.info("Found %d matches between the images", len(matches))
             
             return np.array(correspondences)
 
@@ -146,6 +146,10 @@ class PanaromaStitcher():
             if best_H is not None:
                 best_H = self._compute_homography(max_inliers)
 
+            # Log the number of inliers and the best homography matrix
+            logging.info("Number of inliers: %d", len(max_inliers))
+            logging.info("Best homography matrix:\n%s", best_H)
+
             return best_H
 
         except Exception as e:
@@ -207,7 +211,7 @@ class PanaromaStitcher():
 
         return x_min, x_max, y_min, y_max
 
-    def warp_image(self, left_image, H, right_image_shape):
+    def warp_image(self, left_image, H, right_image_shape, interpolate=False):
         """
         Warps the left_image onto a larger canvas using homography H and places it within the appropriate bounding box.
 
@@ -229,8 +233,13 @@ class PanaromaStitcher():
         x_offset = -min(x_min, 0)
         y_offset = -min(y_min, 0)
 
+        # Log bounding box, canvas dimensions, and offset
+        logging.info("Bounding box: (%d, %d, %d, %d)", x_min, x_max, y_min, y_max)
+        logging.info("Canvas dimensions: (%d, %d)", canvas_width, canvas_height)
+        logging.info("Offset: (%d, %d)", x_offset, y_offset)
+
         # Initialize the canvas
-        warped_canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+        warped_canvas = np.zeros((canvas_height+1, canvas_width+1, 3), dtype=np.uint8)
 
         # Calculate inverse homography for mapping canvas pixels back to left_image coordinates
         H_inv = np.linalg.inv(H)
@@ -239,19 +248,34 @@ class PanaromaStitcher():
         x_coords, y_coords = np.meshgrid(np.arange(x_min, x_max + 1), np.arange(y_min, y_max + 1))
         coords_homogeneous = np.stack([x_coords.flatten(), y_coords.flatten(), np.ones_like(x_coords.flatten())])
 
-        # Map canvas coordinates back to source (left_image) coordinates using inverse homography
-        transformed_coords = H_inv @ coords_homogeneous
-        transformed_coords /= transformed_coords[2]  # Normalize to get (x, y) coordinates in left_image
+        if interpolate:
+            # Map canvas coordinates back to source (left_image) coordinates using inverse homography
+            transformed_coords = H_inv @ coords_homogeneous
+            transformed_coords /= transformed_coords[2]  # Normalize to get (x, y) coordinates in left_image
 
-        x_src = transformed_coords[0].reshape(y_coords.shape)
-        y_src = transformed_coords[1].reshape(y_coords.shape)
+            x_src = transformed_coords[0].reshape(y_coords.shape)
+            y_src = transformed_coords[1].reshape(y_coords.shape)
 
-        # Apply bilinear interpolation on valid transformed coordinates and fill the canvas
-        for i in range(y_coords.shape[0]):
-            for j in range(x_coords.shape[1]):
-                x, y = x_src[i, j], y_src[i, j]
-                if 0 <= x < left_image.shape[1] and 0 <= y < left_image.shape[0]:
-                    warped_canvas[y_coords[i, j] + y_offset, x_coords[i, j] + x_offset] = self._bilinear_interpolation(left_image, x, y)
+            # Apply bilinear interpolation on valid transformed coordinates and fill the canvas
+            for i in range(y_coords.shape[0]):
+                for j in range(x_coords.shape[1]):
+                    x, y = x_src[i, j], y_src[i, j]
+                    if 0 <= x < left_image.shape[1] and 0 <= y < left_image.shape[0]:
+                        warped_canvas[y_coords[i, j] + y_offset, x_coords[i, j] + x_offset] = self._bilinear_interpolation(left_image, x, y)
+        else:
+            # Map canvas coordinates back to source (left_image) coordinates using inverse homography
+            transformed_coords = np.einsum('ij,jk->ik', H_inv, coords_homogeneous)
+            transformed_coords /= transformed_coords[2]  # Normalize to get (x, y) coordinates in left_image
+
+            # Reshape to match canvas grid
+            x_src = transformed_coords[0].reshape(y_coords.shape).round().astype(int)
+            y_src = transformed_coords[1].reshape(y_coords.shape).round().astype(int)
+
+            # Mask to keep coordinates within the source image bounds
+            mask = (0 <= x_src) & (x_src < left_image.shape[1]) & (0 <= y_src) & (y_src < left_image.shape[0])
+
+            # Fill the warped canvas with valid mapped pixels
+            warped_canvas[y_coords[mask] + y_offset, x_coords[mask] + x_offset] = left_image[y_src[mask], x_src[mask]]
 
         return warped_canvas, (x_offset, y_offset)
 
@@ -275,32 +299,38 @@ class PanaromaStitcher():
                 raise ValueError("Need at least two images to create a panorama.")
 
             # Read the first image as the base image for the panorama
-            base_image = cv2.imread(all_images[0])
+            base_image = resize_image(cv2.imread(all_images[0]))
             homography_matrix_list = []
 
             for i in range(1, len(all_images)):
-                next_image = cv2.imread(all_images[i])
+                next_image = resize_image(cv2.imread(all_images[i]))
 
+                if base_image is None:
+                    base_image = next_image
+                    continue
+
+                # print(f"here0_{i}")
+                
                 # Step 1: Detect and match features between consecutive images
-                good_matches = self.detect_and_match_features(base_image, next_image)
+                good_matches = self.detect_and_match_features(next_image, base_image)
 
                 # Step 2: Compute the homography matrix between consecutive images
                 H = self.get_homography_via_RANSAC(good_matches)
                 homography_matrix_list.append(H)
 
-                print(f"here1_{i}")
+                # print(f"here1_{i}")
 
-                # Step 3: Warp the left image and stitch with the next image
-                warped_image, offset = self.warp_image(base_image, H, next_image.shape)
+                # Step 3: Warp the right image and stitch with the base image
+                warped_image, offset = self.warp_image(next_image, H, base_image.shape)
 
                 # Superimpose the warped image onto the canvas
                 x_offset, y_offset = offset
                 panorama = warped_image
-                panorama[y_offset:y_offset + next_image.shape[0], x_offset:x_offset + next_image.shape[1]] = next_image
+                panorama[y_offset:y_offset + base_image.shape[0], x_offset:x_offset + base_image.shape[1]] = base_image
 
                 base_image = panorama
 
-                print(f"here2_{i}")
+                # print(f"here2_{i}")
 
             # Return final stitched image and all homography matrices
             stitched_image = base_image
